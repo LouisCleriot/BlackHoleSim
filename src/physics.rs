@@ -22,239 +22,138 @@ impl BlackHole {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SphericalState {
-    pub r: f32,
-    pub theta: f32,
-    pub phi: f32,
-    pub dr: f32,
-    pub dtheta: f32,
-    pub dphi: f32,
+pub struct CartesianState {
+    pub pos: Vec3,
+    pub mom: Vec3,
+    pub time: f32,
     pub flight_time: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SphericalDerivatives {
-    pub ddr: f32,
-    pub ddtheta: f32,
-    pub ddphi: f32,
+struct StateDerivatives {
+    pub d_pos: Vec3,
+    pub d_mom: Vec3,
+    pub d_time: f32,
 }
 
-fn geodesic_derivatives(state: &SphericalState, gm: f32) -> SphericalDerivatives {
-    let r = state.r;
-    let sin_theta = state.theta.sin();
-    let cos_theta = state.theta.cos();
+fn hamiltonian_derivatives(state: &CartesianState, rs: f32) -> StateDerivatives {
+    let r = state.pos.length();
+    
+    if r < rs * 0.1 {
+        return StateDerivatives {
+            d_pos: Vec3::ZERO,
+            d_mom: Vec3::ZERO,
+            d_time: 0.0,
+        };
+    }
 
-    let cot_theta = if sin_theta.abs() > 1e-6 {
-        cos_theta / sin_theta
-    } else {
-        0.0
-    };
+    let n = state.pos / r;
+    let h_factor = 1.0 - rs / r;
+    
+    let p_dot_n = state.mom.dot(n);
+    let p_sq = state.mom.length_squared();
+    
+    let metric_term = p_sq - (rs/r) * p_dot_n * p_dot_n;
+    let energy_sq = h_factor * metric_term.max(0.0);
+    let energy = energy_sq.sqrt();
 
-    let dr = state.dr;
-    let dtheta = state.dtheta;
-    let dphi = state.dphi;
+    let d_pos = state.mom - (rs / r) * p_dot_n * n;
 
-    let dtheta_sq = dtheta * dtheta;
-    let dphi_sq = dphi * dphi;
-    let sin_theta_sq = sin_theta * sin_theta;
+    let common_factor = 0.5 * rs / (r * r);
+    let term1 = 2.0 * p_dot_n * state.mom;
+    
+    let term2 = 3.0 * (p_dot_n * p_dot_n) * n;
+    
+    let term3 = (energy * energy) / (h_factor * h_factor) * n;
+    
+    let d_mom = common_factor * (term1 - term2 - term3);
 
-    let gr_term = r * (dtheta_sq + sin_theta_sq * dphi_sq);
-    let ddr = -gm / (r * r) + gr_term - (3.0 * gm / (C * C)) * (dtheta_sq + sin_theta_sq * dphi_sq);
+    let d_time = energy / h_factor;
 
-    let ddtheta = sin_theta * cos_theta * dphi_sq - (2.0 / r) * dr * dtheta;
-    let ddphi = -(2.0 / r) * dr * dphi - 2.0 * cot_theta * dtheta * dphi;
-
-    SphericalDerivatives {
-        ddr,
-        ddtheta,
-        ddphi,
+    StateDerivatives {
+        d_pos,
+        d_mom,
+        d_time,
     }
 }
 
-pub fn integrate_rk4_step(state: SphericalState, dt: f32, gm: f32) -> SphericalState {
-    // k1
-    let k1_derivs = geodesic_derivatives(&state, gm);
-    let k1_state = SphericalState {
-        r: state.dr,
-        theta: state.dtheta,
-        phi: state.dphi,
-        dr: k1_derivs.ddr,
-        dtheta: k1_derivs.ddtheta,
-        dphi: k1_derivs.ddphi,
-        flight_time: 0.0,
-    };
+pub fn integrate_rk4_step(state: CartesianState, dt: f32, rs: f32) -> CartesianState {
+    let k1 = hamiltonian_derivatives(&state, rs);
+    
+    let mid_pos_1 = state.pos + k1.d_pos * dt * 0.5;
+    let mid_mom_1 = state.mom + k1.d_mom * dt * 0.5;
+    let mid_time_1 = state.time + k1.d_time * dt * 0.5;
+    let k2_state = CartesianState { pos: mid_pos_1, mom: mid_mom_1, time: mid_time_1, flight_time: 0.0 };
+    let k2 = hamiltonian_derivatives(&k2_state, rs);
 
-    // k2
-    let mid_state_1 = SphericalState {
-        r: state.r + k1_state.r * dt * 0.5,
-        theta: state.theta + k1_state.theta * dt * 0.5,
-        phi: state.phi + k1_state.phi * dt * 0.5,
-        dr: state.dr + k1_state.dr * dt * 0.5,
-        dtheta: state.dtheta + k1_state.dtheta * dt * 0.5,
-        dphi: state.dphi + k1_state.dphi * dt * 0.5,
-        flight_time: 0.0,
-    };
-    let k2_derivs = geodesic_derivatives(&mid_state_1, gm);
-    let k2_state = SphericalState {
-        r: mid_state_1.dr,
-        theta: mid_state_1.dtheta,
-        phi: mid_state_1.dphi,
-        dr: k2_derivs.ddr,
-        dtheta: k2_derivs.ddtheta,
-        dphi: k2_derivs.ddphi,
-        flight_time: 0.0,
-    };
+    let mid_pos_2 = state.pos + k2.d_pos * dt * 0.5;
+    let mid_mom_2 = state.mom + k2.d_mom * dt * 0.5;
+    let mid_time_2 = state.time + k2.d_time * dt * 0.5;
+    let k3_state = CartesianState { pos: mid_pos_2, mom: mid_mom_2, time: mid_time_2, flight_time: 0.0 };
+    let k3 = hamiltonian_derivatives(&k3_state, rs);
 
-    // k3
-    let mid_state_2 = SphericalState {
-        r: state.r + k2_state.r * dt * 0.5,
-        theta: state.theta + k2_state.theta * dt * 0.5,
-        phi: state.phi + k2_state.phi * dt * 0.5,
-        dr: state.dr + k2_state.dr * dt * 0.5,
-        dtheta: state.dtheta + k2_state.dtheta * dt * 0.5,
-        dphi: state.dphi + k2_state.dphi * dt * 0.5,
-        flight_time: 0.0,
-    };
-    let k3_derivs = geodesic_derivatives(&mid_state_2, gm);
-    let k3_state = SphericalState {
-        r: mid_state_2.dr,
-        theta: mid_state_2.dtheta,
-        phi: mid_state_2.dphi,
-        dr: k3_derivs.ddr,
-        dtheta: k3_derivs.ddtheta,
-        dphi: k3_derivs.ddphi,
-        flight_time: 0.0,
-    };
+    let end_pos = state.pos + k3.d_pos * dt;
+    let end_mom = state.mom + k3.d_mom * dt;
+    let end_time = state.time + k3.d_time * dt;
+    let k4_state = CartesianState { pos: end_pos, mom: end_mom, time: end_time, flight_time: 0.0 };
+    let k4 = hamiltonian_derivatives(&k4_state, rs);
 
-    // k4
-    let end_state = SphericalState {
-        r: state.r + k3_state.r * dt,
-        theta: state.theta + k3_state.theta * dt,
-        phi: state.phi + k3_state.phi * dt,
-        dr: state.dr + k3_state.dr * dt,
-        dtheta: state.dtheta + k3_state.dtheta * dt,
-        dphi: state.dphi + k3_state.dphi * dt,
-        flight_time: 0.0,
-    };
-    let k4_derivs = geodesic_derivatives(&end_state, gm);
-    let k4_state = SphericalState {
-        r: end_state.dr,
-        theta: end_state.dtheta,
-        phi: end_state.dphi,
-        dr: k4_derivs.ddr,
-        dtheta: k4_derivs.ddtheta,
-        dphi: k4_derivs.ddphi,
-        flight_time: 0.0,
-    };
+    let final_pos = state.pos + (dt / 6.0) * (k1.d_pos + 2.0 * k2.d_pos + 2.0 * k3.d_pos + k4.d_pos);
+    let final_mom = state.mom + (dt / 6.0) * (k1.d_mom + 2.0 * k2.d_mom + 2.0 * k3.d_mom + k4.d_mom);
+    let final_time = state.time + (dt / 6.0) * (k1.d_time + 2.0 * k2.d_time + 2.0 * k3.d_time + k4.d_time);
 
-    let final_r =
-        state.r + (dt / 6.0) * (k1_state.r + 2.0 * k2_state.r + 2.0 * k3_state.r + k4_state.r);
-    let final_theta = state.theta
-        + (dt / 6.0)
-            * (k1_state.theta + 2.0 * k2_state.theta + 2.0 * k3_state.theta + k4_state.theta);
-    let final_phi = state.phi
-        + (dt / 6.0) * (k1_state.phi + 2.0 * k2_state.phi + 2.0 * k3_state.phi + k4_state.phi);
-    let final_dr =
-        state.dr + (dt / 6.0) * (k1_state.dr + 2.0 * k2_state.dr + 2.0 * k3_state.dr + k4_state.dr);
-    let final_dtheta = state.dtheta
-        + (dt / 6.0)
-            * (k1_state.dtheta + 2.0 * k2_state.dtheta + 2.0 * k3_state.dtheta + k4_state.dtheta);
-    let final_dphi = state.dphi
-        + (dt / 6.0) * (k1_state.dphi + 2.0 * k2_state.dphi + 2.0 * k3_state.dphi + k4_state.dphi);
-
-    SphericalState {
-        r: final_r,
-        theta: final_theta,
-        phi: final_phi,
-        dr: final_dr,
-        dtheta: final_dtheta,
-        dphi: final_dphi,
+    CartesianState {
+        pos: final_pos,
+        mom: final_mom,
+        time: final_time,
         flight_time: state.flight_time + dt,
     }
 }
 
-pub fn calculate_adaptive_dt(state: &SphericalState, schwarzschild_radius: f32) -> f32 {
-    const MIN_DT: f32 = 0.00002;
-    const MAX_DT: f32 = 0.05;
-    const START_ADAPT_R_FACTOR: f32 = 5.0;
-    const END_ADAPT_R_FACTOR: f32 = 50.0;
-
-    let min_r = START_ADAPT_R_FACTOR * schwarzschild_radius;
-    let max_r = END_ADAPT_R_FACTOR * schwarzschild_radius;
-
-    if state.r <= min_r {
-        return MIN_DT;
+pub fn calculate_adaptive_dt(state: &CartesianState, rs: f32) -> f32 {
+    const MIN_DT: f32 = 0.000005; 
+    const MAX_DT: f32 = 0.1;
+    
+    let r = state.pos.length();
+    
+    let photon_sphere = 1.5 * rs;
+    
+    if r < 3.0 * rs && r > rs {
+        let dist_to_ps = (r - photon_sphere).abs();
+        let factor = (dist_to_ps / rs).clamp(0.01, 1.0);
+        return MIN_DT + factor * 0.005;
     }
-    if state.r >= max_r {
-        return MAX_DT;
+    
+    if r <= 5.0 * rs {
+        return MIN_DT * 10.0;
     }
 
-    let alpha = (state.r - min_r) / (max_r - min_r);
-    let dt = MIN_DT + alpha * (MAX_DT - MIN_DT);
-    dt.clamp(MIN_DT, MAX_DT)
+    let alpha = (r - 5.0 * rs) / (50.0 * rs);
+    (MIN_DT * 20.0 + alpha * MAX_DT).clamp(MIN_DT, MAX_DT)
 }
 
-pub fn cartesian_to_spherical_state(
-    cart_pos: Vec3,
-    cart_vel: Vec3,
+pub fn init_cartesian_state(
+    camera_pos: Vec3,
+    camera_dir: Vec3, 
     black_hole_pos: Vec3,
-) -> SphericalState {
-    let rel_pos = cart_pos - black_hole_pos;
+    rs: f32,
+) -> CartesianState {
+    let rel_pos = camera_pos - black_hole_pos;
     let r = rel_pos.length();
+    
+    let vel = camera_dir * C;
+    let n = rel_pos.normalize();
+    let v_dot_n = vel.dot(n);
+    let factor = (rs / r) / (1.0 - rs / r);
+    
+    let mom = vel + n * (v_dot_n * factor);
 
-    if r < 1e-6 {
-        return SphericalState {
-            r: 0.0,
-            theta: 0.0,
-            phi: 0.0,
-            dr: 0.0,
-            dtheta: 0.0,
-            dphi: 0.0,
-            flight_time: 0.0,
-        };
-    }
-
-    let theta = (rel_pos.z / r).acos();
-    let phi = rel_pos.y.atan2(rel_pos.x);
-
-    let dr = rel_pos.dot(cart_vel) / r;
-
-    let rho_sq = rel_pos.x * rel_pos.x + rel_pos.y * rel_pos.y;
-
-    let dphi = if rho_sq > 1e-6 {
-        (rel_pos.x * cart_vel.y - rel_pos.y * cart_vel.x) / rho_sq
-    } else {
-        0.0
-    };
-
-    let dtheta = if rho_sq > 1e-6 {
-        let rho = rho_sq.sqrt();
-        (rel_pos.z * dr - cart_vel.z * r) / (r * rho)
-    } else {
-        0.0
-    };
-
-    SphericalState {
-        r,
-        theta,
-        phi,
-        dr,
-        dtheta,
-        dphi,
+    CartesianState {
+        pos: rel_pos,
+        mom,
+        time: 0.0,
         flight_time: 0.0,
     }
-}
-
-pub fn spherical_to_cartesian_pos(spherical_state: &SphericalState, black_hole_pos: Vec3) -> Vec3 {
-    let r = spherical_state.r;
-    let theta = spherical_state.theta;
-    let phi = spherical_state.phi;
-
-    let x = r * theta.sin() * phi.cos();
-    let y = r * theta.sin() * phi.sin();
-    let z = r * theta.cos();
-
-    black_hole_pos + Vec3::new(x, y, z)
 }
 
 pub struct RelativisticAppearance {
@@ -264,7 +163,7 @@ pub struct RelativisticAppearance {
 
 pub fn calculate_relativistic_effects(
     hit_pos: Vec3,
-    ray_dir: Vec3,
+    ray_dir: Vec3, 
     black_hole: &BlackHole,
     base_temperature_kelvin: f32,
 ) -> RelativisticAppearance {
@@ -281,7 +180,8 @@ pub fn calculate_relativistic_effects(
     let doppler_factor = 1.0 / (gamma * (1.0 - beta * cos_theta));
 
     let grav_factor = (1.0 - rs / r).max(0.0).sqrt();
-    let total_shift = doppler_factor * grav_factor;
+    
+    let total_shift = (doppler_factor * grav_factor).max(0.1);
 
     let observed_temperature = base_temperature_kelvin * total_shift;
     let observed_intensity = total_shift.powf(4.0);

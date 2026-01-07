@@ -1,8 +1,11 @@
 [package]
 name = "blackhole_sim3D"
-version = "0.1.0"
-edition = "2024"
+version = "1.0.0"
+edition = "2026"
 
 [dependencies]
 macroquad = "0.4.5"
 rayon = "1.10"
+wgpu = "24.0"
+pollster = "0.4"
+bytemuck = { version = "1.21", features = ["derive"] }
